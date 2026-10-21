@@ -1,0 +1,89 @@
+{
+  "realm": "banc",
+  "displayName": "Banc de non-régression",
+  "enabled": true,
+  "sslRequired": "external",
+  "registrationAllowed": false,
+  "resetPasswordAllowed": false,
+  "rememberMe": false,
+  "loginWithEmailAllowed": false,
+  "duplicateEmailsAllowed": false,
+  "bruteForceProtected": true,
+  "permanentLockout": false,
+  "failureFactor": 5,
+  "waitIncrementSeconds": 60,
+  "maxFailureWaitSeconds": 900,
+  "minimumQuickLoginWaitSeconds": 60,
+  "quickLoginCheckMilliSeconds": 1000,
+  "maxDeltaTimeSeconds": 43200,
+  "passwordPolicy": "length(12) and notUsername and notEmail",
+  "accessTokenLifespan": 300,
+  "ssoSessionIdleTimeout": 1800,
+  "ssoSessionMaxLifespan": 36000,
+  "revokeRefreshToken": true,
+  "refreshTokenMaxReuse": 0,
+  "eventsEnabled": true,
+  "eventsExpiration": 2592000,
+  "adminEventsEnabled": true,
+  "adminEventsDetailsEnabled": false,
+  "roles": {
+    "realm": [
+      { "name": "proprietaire", "description": "Tout, dont l'administration de l'application" },
+      { "name": "foyer", "description": "Consultation, inventaire et étiquettes" }
+    ]
+  },
+  "clients": [
+    {
+      "clientId": "application-banc",
+      "name": "Application de test (banc)",
+      "protocol": "openid-connect",
+      "enabled": true,
+      "publicClient": false,
+      "clientAuthenticatorType": "client-secret",
+      "secret": "banc-uniquement-pas-un-secret",
+      "standardFlowEnabled": true,
+      "implicitFlowEnabled": false,
+      "directAccessGrantsEnabled": false,
+      "serviceAccountsEnabled": false,
+      "frontchannelLogout": true,
+      "redirectUris": ["http://localhost:8765/rappel"],
+      "webOrigins": ["+"],
+      "attributes": {
+        "pkce.code.challenge.method": "S256",
+        "post.logout.redirect.uris": "http://localhost:8765/au-revoir"
+      }
+    }
+  ],
+  "users": [
+    {
+      "username": "alice",
+      "enabled": true,
+      "email": "alice@banc.invalid",
+      "emailVerified": true,
+      "firstName": "Alice",
+      "lastName": "Banc",
+      "credentials": [{ "type": "password", "value": "banc-alice-Mot2Passe", "temporary": false }],
+      "realmRoles": ["proprietaire"]
+    },
+    {
+      "username": "bob",
+      "enabled": true,
+      "email": "bob@banc.invalid",
+      "emailVerified": true,
+      "firstName": "Bob",
+      "lastName": "Banc",
+      "credentials": [{ "type": "password", "value": "banc-bob-Mot2Passe", "temporary": false }],
+      "realmRoles": ["foyer"]
+    },
+    {
+      "username": "victime",
+      "enabled": true,
+      "email": "victime@banc.invalid",
+      "emailVerified": true,
+      "firstName": "Victime",
+      "lastName": "Banc",
+      "credentials": [{ "type": "password", "value": "banc-victime-Mot2Passe", "temporary": false }],
+      "realmRoles": ["foyer"]
+    }
+  ]
+}

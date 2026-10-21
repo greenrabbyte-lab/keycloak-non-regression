@@ -1,0 +1,2 @@
+# Le Dockerfile ne copie rien du dépôt : contexte de construction vide.
+**

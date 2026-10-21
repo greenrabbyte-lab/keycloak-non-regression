@@ -1,0 +1,14 @@
+# Résultats locaux du banc
+/resultats/
+*.log
+__pycache__/
+.ruff_cache/
+
+# OpenTofu : jamais d'état ni de variables réelles dans Git
+.terraform/
+*.tfstate
+*.tfstate.*
+*.tfplan
+prod.tfvars
+uat.tfvars
+*.auto.tfvars

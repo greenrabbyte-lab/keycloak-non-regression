@@ -1,0 +1,34 @@
+# Exemple pour la production (copier en prod.tfvars, hors Git si le dépôt est partagé).
+# Secrets fournis par l'environnement : TF_VAR_keycloak_client_secret, TF_VAR_entra_client_secret.
+keycloak_url       = "https://auth.exemple.fr"
+keycloak_client_id = "opentofu" # compte de service du realm master, droits limités
+realm              = "applications"
+nom_affiche        = "Connexion"
+ssl_requis         = "all"
+
+roles = {
+  proprietaire = "Administration fonctionnelle"
+  foyer        = "Usage courant"
+}
+
+groupes = {
+  administrateurs = ["proprietaire"]
+}
+
+applications = {
+  "application-fournisseur" = {
+    nom           = "Application du fournisseur X"
+    redirections  = ["https://appli.exemple.fr/oidc/rappel"]
+    session_state = true # exigence de son contrat (keycloak/contrats)
+  }
+}
+
+# Fédération avec Entra ID : rôles d'application d'Entra (attribués par l'outil d'IAM) => rôles Keycloak.
+entra = {
+  tenant_id = "00000000-0000-0000-0000-000000000000"
+  client_id = "00000000-0000-0000-0000-000000000000"
+  roles = {
+    "Applications.Proprietaire" = "proprietaire"
+    "Applications.Foyer"        = "foyer"
+  }
+}

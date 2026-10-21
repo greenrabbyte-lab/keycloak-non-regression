@@ -1,0 +1,384 @@
+name: banc
+
+# Golden path de Keycloak. À chaque proposition (Renovate ou humaine) :
+#   1. contrôles : code, Dockerfile, workflows et configuration OpenTofu (outils figés) ;
+#   2. banc : image candidate (Dockerfile), banc sur la version en place puis sur la candidate,
+#      même base PostgreSQL (vraie montée de version), Trivy sur les deux images, rapport de
+#      montée de version (résumé, pièce jointe, commentaire de la pull request, statut
+#      « banc-keycloak ») ;
+#   3. fusion automatique d'une pull request de Renovate étiquetée « fusion-auto » (correctif ou
+#      reconstruction de l'image officielle) quand le rapport la permet : SANS ÉCART, aucune
+#      faille nouvelle, aucune faille critique ou haute corrigeable ; sinon revue humaine ;
+#   4. publication depuis main seulement : l'image testée, et une note de version (release
+#      GitHub) qui reprend le rapport.
+# Lancement à la main avec deux images (par exemple la version imposée par un fournisseur et une
+# version corrigée) : rapport seulement, rien n'est fusionné ni publié.
+on:
+  pull_request:
+  push:
+    branches: [main]
+  workflow_dispatch:
+    inputs:
+      reference:
+        description: "Image de référence (vide : la version en place, construite depuis main)"
+        required: false
+      candidate:
+        description: "Image candidate (vide : construite depuis la branche lancée)"
+        required: false
+      demarrage_reference:
+        description: "Démarrage de la référence : « start » (image officielle) ou « start --optimized »"
+        required: false
+        default: "start --optimized"
+      mode:
+        description: "migration (même base) ou neuf (base vierge pour chacune)"
+        type: choice
+        options: [migration, neuf]
+        default: migration
+      pull_request:
+        description: "Numéro de la pull request (lancement par le workflow renovate)"
+        required: false
+
+permissions:
+  contents: read
+
+env:
+  IMAGE: ghcr.io/${{ github.repository_owner }}/keycloak
+  # Base du banc : PostgreSQL durci de Docker par défaut (secrets DHI_UTILISATEUR et DHI_JETON),
+  # ou toute image figée par empreinte dans la variable de dépôt IMAGE_POSTGRES.
+  IMAGE_POSTGRES: ${{ vars.IMAGE_POSTGRES || 'dhi.io/postgres:17-debian13@sha256:f76c5c220e3352c6ec5d3b98afa5f41e2fbe50377594a5e1898e134f9ae8076b' }}
+
+jobs:
+  controles:
+    name: contrôles
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1 (Node.js 24)
+        with:
+          persist-credentials: false
+
+      - name: Outils figés (version et empreinte vérifiées)
+        run: .github/installer-outils.sh "$RUNNER_TEMP/outils" analyse
+
+      - name: Python (Ruff, règles de sécurité comprises)
+        run: ruff check --no-cache .
+
+      - name: Bash (ShellCheck)
+        run: shellcheck -x banc/*.sh .github/*.sh
+
+      - name: Dockerfile (hadolint)
+        run: hadolint Dockerfile
+
+      - name: Workflows (actionlint)
+        run: actionlint
+
+      - name: Realm de test et contrats (JSON)
+        run: |
+          python3 -m json.tool realm-banc.json > /dev/null
+          for c in contrats/*.json; do python3 -m json.tool "$c" > /dev/null; done
+
+      - name: OpenTofu (format et validation)
+        env:
+          # Valeur factice : la validation n'accède à aucun état.
+          TF_VAR_state_passphrase: validation-seulement-aucun-etat
+        run: |
+          tofu fmt -check -recursive opentofu
+          cd opentofu/racine
+          tofu init -backend=false -input=false
+          tofu validate
+
+  banc:
+    name: banc de non-régression
+    needs: controles
+    # Pull request venue d'un fork : code non relu, pas de secrets. Le banc ne tourne que sur une
+    # branche du dépôt (après revue, la reprendre dans une branche du dépôt).
+    if: github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    permissions:
+      contents: read
+      pull-requests: write
+      statuses: write
+    outputs:
+      fusion_permise: ${{ steps.rapport.outputs.fusion_permise }}
+      version_keycloak: ${{ steps.version.outputs.version }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1 (Node.js 24)
+        with:
+          persist-credentials: false
+          fetch-depth: 0
+
+      - name: Statut « en cours » (lancement par Renovate)
+        if: github.event_name == 'workflow_dispatch' && inputs.pull_request != ''
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh api "repos/$GITHUB_REPOSITORY/statuses/$GITHUB_SHA" -f state=pending -f context="banc-keycloak" \
+            -f description="Banc de non-régression en cours" \
+            -f target_url="$GITHUB_SERVER_URL/$GITHUB_REPOSITORY/actions/runs/$GITHUB_RUN_ID"
+
+      - name: Connexion à dhi.io (jeton en lecture seule)
+        if: startsWith(env.IMAGE_POSTGRES, 'dhi.io/')
+        env:
+          DHI_UTILISATEUR: ${{ secrets.DHI_UTILISATEUR }}
+          DHI_JETON: ${{ secrets.DHI_JETON }}
+        run: printf '%s' "$DHI_JETON" | docker login dhi.io -u "$DHI_UTILISATEUR" --password-stdin
+
+      - name: Image de base figée par empreinte ?
+        id: version
+        run: |
+          while read -r ligne; do
+            image="$(awk '{print $2}' <<< "$ligne")"
+            if [[ "$image" != *@sha256:* ]]; then
+              empreinte="$(docker buildx imagetools inspect "$image" --format '{{json .Manifest}}' | jq -r .digest)"
+              echo "::error file=Dockerfile::Image non figée : remplacer « $image » par « $image@$empreinte » (vérifier l'empreinte sur le registre)"
+              exit 1
+            fi
+          done < <(grep -E '^FROM ' Dockerfile)
+          version="$(grep -m1 -E '^FROM ' Dockerfile | awk '{print $2}' | sed -E 's/@.*//; s/.*://')"
+          echo "version=$version" >> "$GITHUB_OUTPUT"
+
+      - name: Trivy (version et empreinte figées)
+        run: .github/installer-outils.sh "$RUNNER_TEMP/outils" trivy
+
+      - name: Image candidate
+        env:
+          CANDIDATE: ${{ inputs.candidate }}
+        run: |
+          if [ -n "$CANDIDATE" ]; then
+            docker pull -q "$CANDIDATE"
+            echo "CANDIDATE=$CANDIDATE" >> "$GITHUB_ENV"
+          else
+            docker build --pull -t keycloak:candidate .
+            echo "CANDIDATE=keycloak:candidate" >> "$GITHUB_ENV"
+          fi
+
+      - name: Image de référence (la version en place)
+        env:
+          REFERENCE: ${{ inputs.reference }}
+          BASE_PR: ${{ github.event.pull_request.base.sha }}
+          AVANT: ${{ github.event.before }}
+        run: |
+          if [ -n "$REFERENCE" ]; then
+            docker pull -q "$REFERENCE"
+            echo "REFERENCE=$REFERENCE" >> "$GITHUB_ENV"
+            exit 0
+          fi
+          # La version en place : la base de la pull request ; main avant ce push ; sur main
+          # (relance après une fusion automatique), le commit précédent ; sinon main.
+          if [ -n "$BASE_PR" ]; then
+            base="$BASE_PR"
+          elif [ "$GITHUB_EVENT_NAME" = push ] && [ -n "$AVANT" ] && [[ "$AVANT" != 0000000* ]]; then
+            base="$AVANT"
+          elif [ "$GITHUB_REF" = refs/heads/main ]; then
+            base="$(git rev-parse -q --verify 'HEAD^' || true)"
+          else
+            base=origin/main
+          fi
+          if [ -n "$base" ] && git worktree add -q /tmp/reference "$base" && [ -f /tmp/reference/Dockerfile ]; then
+            docker build --pull -t keycloak:reference /tmp/reference
+            echo "REFERENCE=keycloak:reference" >> "$GITHUB_ENV"
+          else
+            # Première fois : la référence est l'image officielle non durcie, le rapport montre
+            # ce que le durcissement change.
+            officielle="$(grep -m1 -E '^FROM ' Dockerfile | awk '{print $2}')"
+            docker pull -q "$officielle"
+            echo "REFERENCE=$officielle" >> "$GITHUB_ENV"
+            echo "DEMARRAGE_REFERENCE=start" >> "$GITHUB_ENV"
+          fi
+
+      - name: Banc, Trivy et rapport de montée de version
+        id: rapport
+        env:
+          MODE: ${{ inputs.mode || 'migration' }}
+          DEMARRAGE_REF_ENTREE: ${{ inputs.demarrage_reference }}
+          CANDIDATE_ENTREE: ${{ inputs.candidate }}
+        run: |
+          export DEMARRAGE_REFERENCE="${DEMARRAGE_REFERENCE:-${DEMARRAGE_REF_ENTREE:-start --optimized}}"
+          export DEMARRAGE_CANDIDATE="start --optimized"
+          if [ -n "$CANDIDATE_ENTREE" ]; then export DEMARRAGE_CANDIDATE="start"; fi
+          export ETIQUETTE_REFERENCE="$REFERENCE" ETIQUETTE_CANDIDATE="$CANDIDATE" TRIVY="$RUNNER_TEMP/outils/trivy"
+          # Contrats des applications intégrées (l'exemple n'en fait pas partie).
+          CONTRATS=""
+          for c in contrats/*.json; do
+            case "$c" in *exemple*) ;; *) [ -f "$c" ] && CONTRATS="$CONTRATS $c" ;; esac
+          done
+          export CONTRATS
+          code=0
+          banc/lancer_conteneur.sh "$REFERENCE" "$CANDIDATE" /tmp/banc || code=$?
+          [ -f /tmp/banc/rapport.md ] && cat /tmp/banc/rapport.md >> "$GITHUB_STEP_SUMMARY"
+          echo "VERDICT_CODE=$code" >> "$GITHUB_ENV"
+          permise="$(jq -r '.fusion_automatique.permise // false' /tmp/banc/resume.json 2> /dev/null || echo false)"
+          if [ "$permise" = true ]; then echo "fusion_permise=oui"; else echo "fusion_permise=non"; fi >> "$GITHUB_OUTPUT"
+
+      - name: Rapport en pièce jointe
+        if: always()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a  # v7.0.1 (Node.js 24)
+        with:
+          name: rapport-montee-de-version-keycloak
+          path: /tmp/banc
+          retention-days: 90
+
+      - name: Commentaire sur la pull request
+        if: always() && (github.event_name == 'pull_request' || inputs.pull_request != '')
+        env:
+          GH_TOKEN: ${{ github.token }}
+          NUMERO: ${{ github.event.pull_request.number || inputs.pull_request }}
+        run: |
+          [ -f /tmp/banc/rapport.md ] || exit 0
+          gh pr comment "$NUMERO" --repo "$GITHUB_REPOSITORY" --body-file /tmp/banc/rapport.md
+
+      - name: Statut sur le commit (lancement par Renovate)
+        if: always() && github.event_name == 'workflow_dispatch' && inputs.pull_request != ''
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          etat=success
+          [ "${VERDICT_CODE:-1}" = 0 ] || etat=failure
+          gh api "repos/$GITHUB_REPOSITORY/statuses/$GITHUB_SHA" -f state="$etat" -f context="banc-keycloak" \
+            -f description="Banc de non-régression Keycloak" \
+            -f target_url="$GITHUB_SERVER_URL/$GITHUB_REPOSITORY/actions/runs/$GITHUB_RUN_ID"
+
+      - name: Verdict (bloquant si régression, contrat rompu ou nouvelle critique)
+        run: |
+          if [ "$VERDICT_CODE" != 0 ]; then
+            echo "::error::Montée de version BLOQUÉE (ou banc en échec) : voir le rapport"
+            exit 1
+          fi
+
+      - name: Analyse de l'image candidate (bloquante sur une critique corrigeable)
+        run: |
+          "$RUNNER_TEMP/outils/trivy" image --quiet --scanners vuln --severity CRITICAL --ignore-unfixed \
+            --exit-code 1 "$CANDIDATE"
+
+      - name: Image testée, pour la publication
+        if: github.ref == 'refs/heads/main' && inputs.candidate == '' && inputs.reference == ''
+        run: |
+          mkdir -p /tmp/image
+          docker save keycloak:candidate | gzip -1 > /tmp/image/keycloak.tar.gz
+
+      - name: Image testée en pièce jointe (un jour)
+        if: github.ref == 'refs/heads/main' && inputs.candidate == '' && inputs.reference == ''
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a  # v7.0.1 (Node.js 24)
+        with:
+          name: image-testee
+          path: /tmp/image/keycloak.tar.gz
+          retention-days: 1
+          compression-level: 0
+
+  fusion:
+    name: fusion automatique
+    needs: banc
+    if: >-
+      github.event_name == 'workflow_dispatch' && inputs.pull_request != '' &&
+      inputs.candidate == '' && inputs.reference == '' && needs.banc.outputs.fusion_permise == 'oui'
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    permissions:
+      contents: write
+      pull-requests: write
+      actions: write
+    steps:
+      - name: Pull request de Renovate, correctif, sur la version testée ?
+        id: controle
+        env:
+          GH_TOKEN: ${{ github.token }}
+          NUMERO: ${{ inputs.pull_request }}
+        run: |
+          pr="$(gh pr view "$NUMERO" --repo "$GITHUB_REPOSITORY" \
+                --json state,baseRefName,headRefName,headRefOid,isCrossRepository,author,labels)"
+          refus=""
+          verifier() { jq -e "$1" <<< "$pr" > /dev/null || refus="$refus ; $2"; }
+          verifier '.state == "OPEN"' "pull request fermée"
+          verifier '.baseRefName == "main"' "ne vise pas main"
+          verifier '.isCrossRepository == false' "vient d'un fork"
+          verifier '.headRefName == env.GITHUB_REF_NAME' "branche différente de celle testée"
+          verifier '.headRefName | startswith("renovate/")' "pas une branche Renovate"
+          verifier '.headRefOid == env.GITHUB_SHA' "commit différent de celui testé"
+          verifier '.author.is_bot == true and (.author.login | test("github-actions"))' "auteur autre que Renovate"
+          verifier 'any(.labels[]; .name == "fusion-auto")' "étiquette fusion-auto absente (version mineure ou majeure)"
+          verifier 'any(.labels[]; .name == "revue") | not' "étiquette revue présente"
+          if [ -n "$refus" ]; then
+            echo "::notice::Pas de fusion automatique, revue humaine :${refus# ;}"
+            echo "fusionner=non" >> "$GITHUB_OUTPUT"
+          else
+            echo "fusionner=oui" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Fusion (exactement le commit testé), puis publication depuis main
+        if: steps.controle.outputs.fusionner == 'oui'
+        env:
+          GH_TOKEN: ${{ github.token }}
+          NUMERO: ${{ inputs.pull_request }}
+        run: |
+          lien="$GITHUB_SERVER_URL/$GITHUB_REPOSITORY/actions/runs/$GITHUB_RUN_ID"
+          gh pr comment "$NUMERO" --repo "$GITHUB_REPOSITORY" --body \
+            "✔ Fusion automatique : verdict SANS ÉCART, aucune faille nouvelle, aucune faille critique ou haute corrigeable, correctif de Renovate sur le commit testé ($GITHUB_SHA). Banc : $lien"
+          gh pr merge "$NUMERO" --repo "$GITHUB_REPOSITORY" --squash --match-head-commit "$GITHUB_SHA"
+          # Une fusion faite avec le jeton du workflow ne déclenche pas « push » : la publication
+          # est lancée explicitement (banc rejoué sur main, contre la version précédente).
+          gh workflow run banc.yml --repo "$GITHUB_REPOSITORY" --ref main
+
+  publication:
+    name: publication et note de version
+    needs: banc
+    if: >-
+      github.ref == 'refs/heads/main' && (github.event_name == 'push' || github.event_name == 'workflow_dispatch') &&
+      inputs.candidate == '' && inputs.reference == ''
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    permissions:
+      contents: write
+      packages: write
+    steps:
+      - name: Image testée et rapport
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333  # v8.0.2 (Node.js 24)
+        with:
+          path: /tmp/artefacts
+
+      - name: Publication sur ghcr.io
+        id: image
+        env:
+          GHCR_JETON: ${{ secrets.GITHUB_TOKEN }}
+          ACTEUR: ${{ github.actor }}
+          VERSION: ${{ needs.banc.outputs.version_keycloak }}
+        run: |
+          gunzip -c /tmp/artefacts/image-testee/keycloak.tar.gz | docker load -q
+          printf '%s' "$GHCR_JETON" | docker login ghcr.io -u "$ACTEUR" --password-stdin
+          etiquette="${IMAGE}:${VERSION}-${GITHUB_SHA::12}"
+          docker tag keycloak:candidate "$etiquette"
+          docker push --quiet "$etiquette"
+          empreinte="$(docker inspect --format '{{index .RepoDigests 0}}' "$etiquette")"
+          echo "empreinte=$empreinte" >> "$GITHUB_OUTPUT"
+
+      - name: Note de version (release GitHub)
+        env:
+          GH_TOKEN: ${{ github.token }}
+          VERSION: ${{ needs.banc.outputs.version_keycloak }}
+          EMPREINTE: ${{ steps.image.outputs.empreinte }}
+        run: |
+          etiquette_git="v${VERSION}-r${GITHUB_RUN_NUMBER}"
+          rapport=/tmp/artefacts/rapport-montee-de-version-keycloak
+          {
+            echo "Keycloak ${VERSION} (image officielle, durcie), commit ${GITHUB_SHA::12}."
+            echo
+            echo '```'
+            echo "keycloak_image = \"${EMPREINTE}\""
+            echo '```'
+            echo
+            echo "Banc et publication : $GITHUB_SERVER_URL/$GITHUB_REPOSITORY/actions/runs/$GITHUB_RUN_ID"
+            echo
+            cat "$rapport/rapport.md"
+          } > /tmp/note.md
+          gh release create "$etiquette_git" --repo "$GITHUB_REPOSITORY" --target "$GITHUB_SHA" \
+            --title "Keycloak ${VERSION} durci (r${GITHUB_RUN_NUMBER})" --notes-file /tmp/note.md \
+            "$rapport/rapport.md" "$rapport/resume.json"
+          {
+            echo "### Image publiée"
+            echo
+            echo '```'
+            echo "keycloak_image = \"${EMPREINTE}\""
+            echo '```'
+            echo
+            echo "Note de version : $etiquette_git"
+          } >> "$GITHUB_STEP_SUMMARY"

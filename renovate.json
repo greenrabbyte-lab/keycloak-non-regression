@@ -1,0 +1,37 @@
+{
+  "$schema": "https://docs.renovatebot.com/renovate-schema.json",
+  "extends": ["config:recommended"],
+  "timezone": "Europe/Zurich",
+  "enabledManagers": ["dockerfile"],
+  "pinDigests": true,
+  "dependencyDashboard": true,
+  "dependencyDashboardTitle": "Tableau de bord des mises à jour (Renovate)",
+  "labels": ["dépendances"],
+  "prConcurrentLimit": 3,
+  "automerge": false,
+  "packageRules": [
+    {
+      "description": "Keycloak : correctifs (patch) proposés 3 jours après publication, c'est souvent de la sécurité. Fusionnés seuls par le workflow banc si le rapport le permet (SANS ÉCART, aucune faille nouvelle, aucune faille critique ou haute corrigeable), sinon revue humaine.",
+      "matchPackageNames": ["quay.io/keycloak/keycloak"],
+      "matchUpdateTypes": ["patch"],
+      "minimumReleaseAge": "3 days",
+      "groupName": "keycloak (correctif)",
+      "labels": ["keycloak", "dépendances", "fusion-auto"]
+    },
+    {
+      "description": "Keycloak : reconstructions de l'image officielle (même version, nouvelle empreinte) proposées sans délai ; mêmes règles de fusion que les correctifs.",
+      "matchPackageNames": ["quay.io/keycloak/keycloak"],
+      "matchUpdateTypes": ["digest", "pinDigest"],
+      "groupName": "keycloak (reconstruction)",
+      "labels": ["keycloak", "dépendances", "fusion-auto"]
+    },
+    {
+      "description": "Keycloak : versions mineures et majeures après 14 jours, toujours en revue humaine du rapport de montée de version.",
+      "matchPackageNames": ["quay.io/keycloak/keycloak"],
+      "matchUpdateTypes": ["minor", "major"],
+      "minimumReleaseAge": "14 days",
+      "groupName": "keycloak (version)",
+      "labels": ["keycloak", "dépendances", "revue"]
+    }
+  ]
+}

@@ -1,0 +1,60 @@
+name: renovate
+
+# Renovate sur un runner GitHub : image figée par version et empreinte, jeton éphémère du
+# workflow, aucun service tiers. Les pull requests ouvertes avec ce jeton ne déclenchent pas les
+# autres workflows (règle de GitHub) : le banc est donc lancé explicitement sur chaque branche
+# Renovate pas encore testée (aucun statut « banc-keycloak » sur son dernier commit). Le banc
+# commente la pull request, pose le statut, et fusionne seul les correctifs quand le rapport le
+# permet (voir banc.yml).
+on:
+  schedule:
+    - cron: "17 4 * * *"
+  workflow_dispatch:
+
+permissions:
+  contents: write
+  pull-requests: write
+  issues: write
+  actions: write
+  statuses: read
+
+env:
+  RENOVATE_VERSION: "44.131.3"
+  RENOVATE_DIGEST: sha256:a38ff447e54641e310f7d78029fbfa0005d936ec2b7a9cdf97ac4c2dfc55b70e
+
+jobs:
+  renovate:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - name: Renovate (image vérifiée par son empreinte)
+        env:
+          RENOVATE_TOKEN: ${{ github.token }}
+        run: |
+          image="ghcr.io/renovatebot/renovate:$RENOVATE_VERSION"
+          docker pull -q "$image" > /dev/null
+          vu="$(docker image inspect -f '{{range .RepoDigests}}{{println .}}{{end}}' "$image" \
+                | grep '^ghcr.io/renovatebot/renovate@' | head -1 | cut -d@ -f2)"
+          [ "$vu" = "$RENOVATE_DIGEST" ] || { echo "::error::Empreinte inattendue ($vu) : image refusée"; exit 1; }
+          docker run --rm --cap-drop ALL --security-opt no-new-privileges \
+            -e RENOVATE_TOKEN -e RENOVATE_PLATFORM=github -e "RENOVATE_REPOSITORIES=$GITHUB_REPOSITORY" \
+            -e RENOVATE_ONBOARDING=false -e RENOVATE_REQUIRE_CONFIG=required \
+            -e "RENOVATE_GIT_AUTHOR=Renovate (GitHub Actions) <noreply@github.com>" \
+            -e LOG_LEVEL=info "ghcr.io/renovatebot/renovate@$RENOVATE_DIGEST"
+
+      - name: Banc sur les branches Renovate pas encore testées
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh pr list --repo "$GITHUB_REPOSITORY" --state open --search "head:renovate/" \
+            --json number,headRefName,headRefOid --jq '.[] | "\(.number) \(.headRefName) \(.headRefOid)"' \
+          | while read -r numero branche commit; do
+              deja="$(gh api "repos/$GITHUB_REPOSITORY/commits/$commit/status" \
+                        --jq '[.statuses[] | select(.context == "banc-keycloak")] | length')"
+              if [ "$deja" = 0 ]; then
+                echo "Banc sur $branche (#$numero, $commit)"
+                gh workflow run banc.yml --repo "$GITHUB_REPOSITORY" --ref "$branche" -f pull_request="$numero"
+              else
+                echo "Déjà testée : $branche (#$numero, $commit)"
+              fi
+            done

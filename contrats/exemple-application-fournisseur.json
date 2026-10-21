@@ -1,0 +1,30 @@
+{
+  "application": "Application d'un fournisseur (exemple)",
+  "description": "Ce dont l'application a besoin de Keycloak, établi avec le fournisseur ou relevé dans sa configuration. Chaque exigence porte sur une observation du banc (banc.py).",
+  "exigences": [
+    {
+      "observation": "jeton.acces.forme",
+      "cle": "session_state",
+      "raison": "l'application suit la session Keycloak avec la revendication session_state",
+      "remede": "mapper de protocole « oidc-session-state-mapper » sur le client (Keycloak 25 et suivants)"
+    },
+    {
+      "observation": "jeton.acces.forme",
+      "cle": "realm_access",
+      "raison": "les droits sont lus dans realm_access.roles",
+      "remede": "mapper « realm roles » sur la portée « roles »"
+    },
+    {
+      "observation": "oidc.decouverte.cles",
+      "cle": "end_session_endpoint",
+      "raison": "déconnexion depuis l'application",
+      "remede": "aucun : fourni par Keycloak"
+    },
+    {
+      "observation": "page_connexion.champs",
+      "cle": "username",
+      "raison": "les tests automatisés du fournisseur remplissent ce champ",
+      "remede": "adapter les tests du fournisseur ou le thème de connexion"
+    }
+  ]
+}
