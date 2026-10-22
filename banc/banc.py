@@ -149,6 +149,11 @@ def verifier_rs256(jeton, jwks):
     return hmac.compare_digest(recu, attendu)
 
 
+def arrondi_10(valeur):
+    """Durée en secondes arrondie à 10 s (None si absente) : absorbe la seconde de décalage."""
+    return None if valeur is None else int(round(valeur, -1))
+
+
 def forme(valeur):
     """Forme d'une valeur, pour comparer des jetons sans leurs valeurs changeantes."""
     if isinstance(valeur, dict):
@@ -312,8 +317,13 @@ class Banc:
                 "typ": acces.get("typ"), "azp": acces.get("azp"), "aud": acces.get("aud"),
                 "scope": sorted(acces.get("scope", "").split()),
                 "roles_realm": sorted(acces.get("realm_access", {}).get("roles", [])),
-                "duree_acces_s": acces["exp"] - acces["iat"], "expires_in": jeton.get("expires_in"),
-                "refresh_expires_in": jeton.get("refresh_expires_in"), "token_type": jeton.get("token_type")}
+                "duree_acces_s": acces["exp"] - acces["iat"],
+                # expires_in et refresh_expires_in sont calculés à l'instant de la réponse : 299 ou 300
+                # selon la seconde (faux écart constaté le 2026-10-22). Arrondis à 10 s ; la durée
+                # exacte reste dans duree_acces_s (exp - iat).
+                "expires_in": arrondi_10(jeton.get("expires_in")),
+                "refresh_expires_in": arrondi_10(jeton.get("refresh_expires_in")),
+                "token_type": jeton.get("token_type")}
 
         @c.test("securite.signature", "securite", "Jetons signés en RS256 et vérifiables avec les clés publiées")
         def _():
