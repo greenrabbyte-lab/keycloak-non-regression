@@ -248,8 +248,22 @@ jobs:
 
       - name: Analyse de l'image candidate (bloquante sur une critique corrigeable)
         run: |
-          "$RUNNER_TEMP/outils/trivy" image --quiet --scanners vuln --severity CRITICAL --ignore-unfixed \
-            --exit-code 1 "$CANDIDATE"
+          # Bloquante sur main (d'où part la publication) et dès que l'image change (Dockerfile
+          # modifié, image fournie à la main). Sur une pull request qui ne touche pas l'image, une
+          # faille déjà présente sur main est signalée sans bloquer : sinon, une faille en attente
+          # de reconstruction de l'image officielle empêche de corriger le banc ou les workflows.
+          bloquante=oui
+          if [ "$GITHUB_REF" != refs/heads/main ] && [ "$CANDIDATE" = keycloak:candidate ] \
+             && [ -f /tmp/reference/Dockerfile ] && cmp -s Dockerfile /tmp/reference/Dockerfile; then
+            bloquante=non
+          fi
+          if ! "$RUNNER_TEMP/outils/trivy" image --quiet --scanners vuln --severity CRITICAL --ignore-unfixed \
+               --exit-code 1 "$CANDIDATE"; then
+            if [ "$bloquante" = oui ]; then
+              exit 1
+            fi
+            echo "::warning::Faille critique corrigeable déjà présente sur main, image inchangée par cette pull request : en attente d'une reconstruction de l'image officielle (Renovate)"
+          fi
 
       - name: Image testée, pour la publication
         if: github.ref == 'refs/heads/main' && inputs.candidate == '' && inputs.reference == ''
