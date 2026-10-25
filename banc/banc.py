@@ -451,12 +451,21 @@ class Banc:
             for _ in range(5):
                 c.connexion("victime", "mauvais-mot-de-passe-123")
                 time.sleep(1.1)  # au-delà de la détection des connexions trop rapprochées
+            # Keycloak enregistre les échecs de façon asynchrone : sur une machine chargée, le bon mot
+            # de passe tenté aussitôt après passait avant le verrouillage (faux écart du 2026-10-25,
+            # image identique des deux côtés). On attend que le verrouillage soit effectif, au plus
+            # 15 s ; un verrouillage qui n'arrive jamais reste un échec.
+            ident = c.admin_get(f"/realms/{REALM}/users?username=victime&exact=true")[0]["id"]
+            chemin = f"/realms/{REALM}/attack-detection/brute-force/users/{ident}"
+            limite = time.monotonic() + 15
+            etat_attaque = c.admin_get(chemin)
+            while etat_attaque.get("disabled") is not True and time.monotonic() < limite:
+                time.sleep(0.5)
+                etat_attaque = c.admin_get(chemin)
+            verifier(etat_attaque.get("disabled") is True, f"non verrouillé après 15 s : {etat_attaque}")
             jeton, _ = c.connexion("victime")
             verifier(jeton is None, "connexion acceptée malgré le verrouillage")
-            ident = c.admin_get(f"/realms/{REALM}/users?username=victime&exact=true")[0]["id"]
-            etat_attaque = c.admin_get(f"/realms/{REALM}/attack-detection/brute-force/users/{ident}")
-            verifier(etat_attaque.get("disabled") is True, f"non verrouillé : {etat_attaque}")
-            c.observations["securite.force_brute"] = {k: forme(v) for k, v in etat_attaque.items()}
+            c.observations["securite.force_brute"] = {k: forme(v) for k, v in c.admin_get(chemin).items()}
 
         @c.test("exploitation.journal_connexions", "exploitation",
                 "Journal des connexions : réussites et échecs enregistrés")
