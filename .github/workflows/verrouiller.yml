@@ -1,0 +1,67 @@
+name: verrouiller
+
+# Fichier de verrouillage des fournisseurs OpenTofu (opentofu/racine/.terraform.lock.hcl) :
+# version et empreintes de chaque fournisseur, pour les runners et les postes (Linux, macOS,
+# Windows). Lancé à la main, et après toute montée de version d'un fournisseur : régénère le
+# fichier, ouvre une pull request s'il change, puis lance le banc sur sa branche (une pull request
+# ouverte avec le jeton du workflow ne déclenche pas les autres workflows). Relire les versions
+# avant de fusionner : rien n'est fusionné automatiquement.
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  verrouiller:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    permissions:
+      contents: write
+      pull-requests: write
+      actions: write
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1 (Node.js 24)
+        with:
+          persist-credentials: false
+
+      - name: Outils figés (version et empreinte vérifiées)
+        run: .github/installer-outils.sh "$RUNNER_TEMP/outils" analyse
+
+      - name: Fichier de verrouillage (quatre plateformes)
+        working-directory: opentofu/racine
+        run: |
+          tofu providers lock -platform=linux_amd64 -platform=linux_arm64 \
+            -platform=darwin_arm64 -platform=windows_amd64
+          {
+            echo "## Fichier de verrouillage OpenTofu"
+            echo '```hcl'
+            cat .terraform.lock.hcl
+            echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Pull request si le fichier change, puis banc sur sa branche
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          fichier=opentofu/racine/.terraform.lock.hcl
+          if git ls-files --error-unmatch "$fichier" > /dev/null 2>&1 && git diff --quiet -- "$fichier"; then
+            echo "Fichier de verrouillage inchangé : rien à proposer"
+            exit 0
+          fi
+          branche="verrou/opentofu-$(date -u +%Y%m%d-%H%M)"
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git switch -q -c "$branche"
+          git add "$fichier"
+          git commit -q -m "OpenTofu : fichier de verrouillage des fournisseurs (versions et empreintes)"
+          # Jeton utilisé pour ce seul push, jamais conservé dans la configuration de Git.
+          auth="$(printf 'x-access-token:%s' "$GH_TOKEN" | base64 -w0)"
+          echo "::add-mask::$auth"
+          git -c http.extraheader="AUTHORIZATION: basic $auth" push -q origin "HEAD:refs/heads/$branche"
+          url="$(gh pr create --base main --head "$branche" \
+                  --title "OpenTofu : fichier de verrouillage des fournisseurs" \
+                  --body "Généré par le workflow « verrouiller » ($GITHUB_SERVER_URL/$GITHUB_REPOSITORY/actions/runs/$GITHUB_RUN_ID). Relire les versions des fournisseurs avant de fusionner.")"
+          numero="${url##*/}"
+          echo "Pull request : $url"
+          gh workflow run banc.yml --ref "$branche" -f pull_request="$numero"
