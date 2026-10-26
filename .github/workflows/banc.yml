@@ -76,6 +76,7 @@ jobs:
         run: |
           python3 -m json.tool realm-banc.json > /dev/null
           for c in contrats/*.json; do python3 -m json.tool "$c" > /dev/null; done
+          python3 -m json.tool securite/vex.openvex.json > /dev/null
 
       - name: OpenTofu (format et validation)
         env:
@@ -344,7 +345,16 @@ jobs:
     permissions:
       contents: write
       packages: write
+      id-token: write      # signature et attestations sans clé (Sigstore, identité du workflow)
+      attestations: write
     steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1 (Node.js 24)
+        with:
+          persist-credentials: false
+
+      - name: Outils figés (Trivy pour le SBOM, cosign pour la signature)
+        run: .github/installer-outils.sh "$RUNNER_TEMP/outils" trivy signature
+
       - name: Image testée et rapport
         uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333  # v8.0.2 (Node.js 24)
         with:
@@ -364,6 +374,41 @@ jobs:
           docker push --quiet "$etiquette"
           empreinte="$(docker inspect --format '{{index .RepoDigests 0}}' "$etiquette")"
           echo "empreinte=$empreinte" >> "$GITHUB_OUTPUT"
+          echo "digest=${empreinte#*@}" >> "$GITHUB_OUTPUT"
+
+      # Preuves attachées à l'image sur ghcr.io (vérifiables par tout consommateur, voir README) :
+      # SBOM CycloneDX, déclarations VEX, signature de l'image par l'identité OIDC du workflow.
+      - name: SBOM, VEX et signature de l'image (Sigstore, sans clé)
+        env:
+          EMPREINTE: ${{ steps.image.outputs.empreinte }}
+        run: |
+          trivy image --quiet --format cyclonedx --output /tmp/sbom.cdx.json "$EMPREINTE"
+          cosign sign --yes "$EMPREINTE"
+          cosign attest --yes --type cyclonedx --predicate /tmp/sbom.cdx.json "$EMPREINTE"
+          cosign attest --yes --type openvex --predicate securite/vex.openvex.json "$EMPREINTE"
+          {
+            echo "### Preuves attachées à \`$EMPREINTE\`"
+            echo
+            echo "- SBOM CycloneDX : $(jq '.components | length' /tmp/sbom.cdx.json) composants"
+            echo "- VEX : $(jq '.statements | length' securite/vex.openvex.json) déclaration(s)"
+            echo "- signature et attestations Sigstore (identité : ce workflow)"
+          } >> "$GITHUB_STEP_SUMMARY"
+
+      # Attestations GitHub (provenance SLSA et SBOM), vérifiables par « gh attestation verify ».
+      - name: Attestation de provenance (SLSA)
+        uses: actions/attest-build-provenance@4d101475d8b20a2381f78447822ac1eab6504dd8  # v4.2.2
+        with:
+          subject-name: ${{ env.IMAGE }}
+          subject-digest: ${{ steps.image.outputs.digest }}
+          push-to-registry: true
+
+      - name: Attestation du SBOM
+        uses: actions/attest-sbom@c604332985a26aa8cf1bdc465b92731239ec6b9e  # v4.1.0
+        with:
+          subject-name: ${{ env.IMAGE }}
+          subject-digest: ${{ steps.image.outputs.digest }}
+          sbom-path: /tmp/sbom.cdx.json
+          push-to-registry: true
 
       - name: Note de version (release GitHub)
         env:
@@ -382,11 +427,15 @@ jobs:
             echo
             echo "Banc et publication : $GITHUB_SERVER_URL/$GITHUB_REPOSITORY/actions/runs/$GITHUB_RUN_ID"
             echo
+            echo "Preuves attachées à l'image (SBOM CycloneDX, VEX, provenance SLSA, signature Sigstore) :"
+            echo "vérification dans le README, section « Vérifier une image publiée »."
+            echo
             cat "$rapport/rapport.md"
           } > /tmp/note.md
+          cp securite/vex.openvex.json /tmp/vex.openvex.json
           gh release create "$etiquette_git" --repo "$GITHUB_REPOSITORY" --target "$GITHUB_SHA" \
             --title "Keycloak ${VERSION} durci (r${GITHUB_RUN_NUMBER})" --notes-file /tmp/note.md \
-            "$rapport/rapport.md" "$rapport/resume.json"
+            "$rapport/rapport.md" "$rapport/resume.json" /tmp/sbom.cdx.json /tmp/vex.openvex.json
           {
             echo "### Image publiée"
             echo

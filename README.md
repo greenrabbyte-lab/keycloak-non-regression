@@ -116,6 +116,41 @@ proxy, sortie vers PostgreSQL seulement) ; PostgreSQL en TLS ; secrets hors Git 
 connexions et des actions d'administration activé et collecté ; compte d'administration initial
 supprimé après création d'un compte de service à droits limités.
 
+## Vérifier une image publiée
+
+Chaque image publiée depuis `main` porte, attachées sur ghcr.io et jointes à la note de
+version : un **SBOM** (CycloneDX, produit par Trivy), les **déclarations VEX** du kit
+(`securite/vex.openvex.json`, failles jugées non exploitables et pourquoi), une **attestation de
+provenance SLSA** (construite par ce workflow, sur ce commit) et une **signature Sigstore** sans
+clé (identité OIDC du workflow). Avant de déployer, vérifier :
+
+```bash
+IMAGE="ghcr.io/greenrabbyte-lab/keycloak@sha256:…"   # empreinte de la note de version
+DEPOT=greenrabbyte-lab/keycloak-non-regression
+
+# Provenance et SBOM attestés par GitHub (gh ≥ 2.49) : construit par le workflow banc.yml de ce dépôt
+gh attestation verify "oci://$IMAGE" --repo "$DEPOT" \
+  --signer-workflow "$DEPOT/.github/workflows/banc.yml"
+
+# Signature et attestations Sigstore (cosign ≥ 2)
+cosign verify "$IMAGE" \
+  --certificate-identity-regexp "^https://github.com/$DEPOT/\.github/workflows/banc\.yml@refs/heads/main$" \
+  --certificate-oidc-issuer https://token.actions.githubusercontent.com
+cosign verify-attestation --type cyclonedx "$IMAGE" \
+  --certificate-identity-regexp "^https://github.com/$DEPOT/" \
+  --certificate-oidc-issuer https://token.actions.githubusercontent.com | jq -r .payload | base64 -d | jq .predicate > sbom.cdx.json
+cosign verify-attestation --type openvex "$IMAGE" \
+  --certificate-identity-regexp "^https://github.com/$DEPOT/" \
+  --certificate-oidc-issuer https://token.actions.githubusercontent.com | jq -r .payload | base64 -d | jq .predicate > vex.openvex.json
+
+# Failles restantes, VEX appliqué (ou avec votre propre VEX)
+trivy image --vex vex.openvex.json "$IMAGE"
+trivy sbom sbom.cdx.json
+```
+
+Une image sans ces preuves, ou dont la signature ne vient pas de ce workflow sur `main`, n'est
+pas une image publiée par le kit. Les règles d'écriture du VEX sont dans `securite/README.md`.
+
 ## Configuration en code (OpenTofu)
 
 Fournisseur officiel `keycloak/keycloak`. Le module `opentofu/modules/realm` décrit la sécurité
