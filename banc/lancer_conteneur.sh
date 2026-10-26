@@ -15,6 +15,9 @@
 #   IMAGE_POSTGRES        figée par empreinte.
 #   CONTRATS              fichiers de contrats d'application, séparés par des espaces.
 #   TRIVY                 chemin de trivy : analyse des deux images, failles dans le rapport.
+#   VEX                   déclarations OpenVEX (défaut : securite/vex.openvex.json à côté du
+#                         banc, s'il existe) : les failles déclarées non exploitables sont
+#                         écartées du rapport, pour les deux images.
 # Code de sortie : celui de rapport.py (2 : montée bloquée).
 set -euo pipefail
 ICI="$(cd "$(dirname "$0")" && pwd)"
@@ -148,8 +151,11 @@ passer_banc "${ETIQUETTE_CANDIDATE:-$CAND}" "$SORTIE/candidate.json"
 trivy_args=()
 if [ -n "${TRIVY:-}" ]; then
   echo "== Failles (Trivy)"
-  "$TRIVY" image --quiet --scanners vuln --format json --output "$SORTIE/trivy-reference.json" "$REF"
-  "$TRIVY" image --quiet --scanners vuln --format json --output "$SORTIE/trivy-candidate.json" "$CAND"
+  vex=()
+  VEX="${VEX:-$ICI/../securite/vex.openvex.json}"
+  if [ -f "$VEX" ]; then vex=(--vex "$VEX"); echo "VEX : $VEX"; fi
+  "$TRIVY" image --quiet --scanners vuln "${vex[@]}" --format json --output "$SORTIE/trivy-reference.json" "$REF"
+  "$TRIVY" image --quiet --scanners vuln "${vex[@]}" --format json --output "$SORTIE/trivy-candidate.json" "$CAND"
   trivy_args=(--trivy-reference "$SORTIE/trivy-reference.json" --trivy-candidate "$SORTIE/trivy-candidate.json")
 fi
 contrats=()

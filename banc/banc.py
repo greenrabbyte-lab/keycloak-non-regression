@@ -206,6 +206,11 @@ class Banc:
         verifier(r.statut == 200, f"GET /admin{chemin} : {r.statut}")
         return r.json()
 
+    def admin_delete(self, chemin):
+        r = Client().requete("DELETE", f"{self.url}/admin{chemin}",
+                             en_tetes={"Authorization": f"Bearer {self.jeton_admin()}"})
+        verifier(r.statut in (200, 204), f"DELETE /admin{chemin} : {r.statut}")
+
     def jwks(self):
         if self._jwks is None:
             self._jwks = Client().get(f"{self.base}/certs").json()
@@ -448,15 +453,29 @@ class Banc:
         @c.test("securite.force_brute", "securite",
                 "Force brute : compte verrouillé temporairement après 5 échecs, même avec le bon mot de passe")
         def _():
+            ident = c.admin_get(f"/realms/{REALM}/users?username=victime&exact=true")[0]["id"]
+            chemin = f"/realms/{REALM}/attack-detection/brute-force/users/{ident}"
+            # Depuis Keycloak 26.8, les échecs de connexion sont conservés en base (login-failures:v2).
+            # En mode migration, la candidate démarre sur la base de la référence : « victime » arrive
+            # avec les 5 échecs et le verrouillage de 60 s laissés par la référence. Selon la vitesse
+            # de la machine, le test tombait avant, pendant ou après ce verrouillage hérité (pendant,
+            # les tentatives ne sont pas comptées) : résultat aléatoire, image identique des deux côtés
+            # (faux écart du 2026-10-25). On part donc d'un état vierge, comme sur une base neuve.
+            c.admin_delete(chemin)
             for _ in range(5):
                 c.connexion("victime", "mauvais-mot-de-passe-123")
                 time.sleep(1.1)  # au-delà de la détection des connexions trop rapprochées
+            # Keycloak traite les échecs en tâche de fond (exécuteur « bruteforce ») : on attend que le
+            # verrouillage soit effectif, au plus 15 s ; un verrouillage qui n'arrive jamais reste un échec.
+            limite = time.monotonic() + 15
+            etat_attaque = c.admin_get(chemin)
+            while etat_attaque.get("disabled") is not True and time.monotonic() < limite:
+                time.sleep(0.5)
+                etat_attaque = c.admin_get(chemin)
+            verifier(etat_attaque.get("disabled") is True, f"non verrouillé après 15 s : {etat_attaque}")
             jeton, _ = c.connexion("victime")
             verifier(jeton is None, "connexion acceptée malgré le verrouillage")
-            ident = c.admin_get(f"/realms/{REALM}/users?username=victime&exact=true")[0]["id"]
-            etat_attaque = c.admin_get(f"/realms/{REALM}/attack-detection/brute-force/users/{ident}")
-            verifier(etat_attaque.get("disabled") is True, f"non verrouillé : {etat_attaque}")
-            c.observations["securite.force_brute"] = {k: forme(v) for k, v in etat_attaque.items()}
+            c.observations["securite.force_brute"] = {k: forme(v) for k, v in c.admin_get(chemin).items()}
 
         @c.test("exploitation.journal_connexions", "exploitation",
                 "Journal des connexions : réussites et échecs enregistrés")

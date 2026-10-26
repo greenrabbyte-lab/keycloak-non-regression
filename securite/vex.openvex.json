@@ -1,0 +1,9 @@
+{
+  "@context": "https://openvex.dev/ns/v0.2.0",
+  "@id": "https://github.com/greenrabbyte-lab/keycloak-non-regression/securite/vex.openvex.json",
+  "author": "greenrabbyte-lab (kit keycloak-non-regression)",
+  "role": "mainteneur de l'image durcie",
+  "timestamp": "2026-10-26T15:30:00Z",
+  "version": 1,
+  "statements": []
+}
