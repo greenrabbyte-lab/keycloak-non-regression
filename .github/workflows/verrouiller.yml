@@ -30,6 +30,9 @@ jobs:
 
       - name: Fichier de verrouillage (quatre plateformes)
         working-directory: opentofu/racine
+          env:
+          # Valeur factice : aucun état n'est lu ni écrit.
+          TF_VAR_state_passphrase: verrouillage-seulement-aucun-etat
         run: |
           tofu providers lock -platform=linux_amd64 -platform=linux_arm64 \
             -platform=darwin_arm64 -platform=windows_amd64
