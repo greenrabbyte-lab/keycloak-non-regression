@@ -175,8 +175,10 @@ amont). État chiffré (`state_passphrase`) ; `prod.tfvars` et `uat.tfvars` rest
    - Actions : jeton du workflow en lecture par défaut ; « Allow GitHub Actions to create and
      approve pull requests » (Renovate) ; pour un dépôt public, approbation requise pour les
      workflows des contributeurs externes ;
-   - règle sur `main` : pull request obligatoire, contrôles requis « contrôles » et « banc de
-     non-régression », pas de poussée forcée ni de suppression ;
+   - règle sur `main` : pull request obligatoire, **statut requis `banc-keycloak`** (posé par le
+     banc sur le commit de chaque pull request, après le verdict et l'analyse de l'image ; ne pas
+     exiger les noms des jobs : un run en attente d'approbation bloquerait la fusion automatique),
+     pas de poussée forcée ni de suppression ;
    - suppression automatique des branches fusionnées ;
    - **jamais de runner auto-hébergé** sur un dépôt public.
 4. Remplacer `realm-banc.json` (ou `opentofu/racine/banc.tfvars`) par la configuration type de
