@@ -49,12 +49,25 @@ jobs:
           gh pr list --repo "$GITHUB_REPOSITORY" --state open --search "head:renovate/" \
             --json number,headRefName,headRefOid --jq '.[] | "\(.number) \(.headRefName) \(.headRefOid)"' \
           | while read -r numero branche commit; do
-              deja="$(gh api "repos/$GITHUB_REPOSITORY/commits/$commit/status" \
-                        --jq '[.statuses[] | select(.context == "banc-keycloak")] | length')"
-              if [ "$deja" = 0 ]; then
-                echo "Banc sur $branche (#$numero, $commit)"
-                gh workflow run banc.yml --repo "$GITHUB_REPOSITORY" --ref "$branche" -f pull_request="$numero"
-              else
-                echo "Déjà testée : $branche (#$numero, $commit)"
-              fi
+              etat="$(gh api "repos/$GITHUB_REPOSITORY/commits/$commit/status" \
+                        --jq '[.statuses[] | select(.context == "banc-keycloak")][0].state // "aucun"')"
+              fusion_auto="$(gh pr view "$numero" --repo "$GITHUB_REPOSITORY" --json labels \
+                               --jq 'any(.labels[]; .name == "fusion-auto")')"
+              case "$etat" in
+                aucun)
+                  echo "Banc sur $branche (#$numero, $commit)"
+                  gh workflow run banc.yml --repo "$GITHUB_REPOSITORY" --ref "$branche" -f pull_request="$numero" ;;
+                success)
+                  # Testée avec succès mais toujours ouverte : la fusion automatique n'a pas abouti
+                  # (règle de main pas encore satisfaite, par exemple). On rejoue le banc avec le
+                  # numéro de la pull request : le job « fusion automatique » retente.
+                  if [ "$fusion_auto" = true ]; then
+                    echo "Déjà testée avec succès, pas fusionnée : relance pour fusion ($branche, #$numero)"
+                    gh workflow run banc.yml --repo "$GITHUB_REPOSITORY" --ref "$branche" -f pull_request="$numero"
+                  else
+                    echo "Déjà testée, revue humaine : $branche (#$numero)"
+                  fi ;;
+                *)
+                  echo "Déjà testée ($etat) : $branche (#$numero, $commit)" ;;
+              esac
             done

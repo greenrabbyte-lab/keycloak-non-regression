@@ -229,18 +229,8 @@ jobs:
           [ -f /tmp/banc/rapport.md ] || exit 0
           gh pr comment "$NUMERO" --repo "$GITHUB_REPOSITORY" --body-file /tmp/banc/rapport.md
 
-      - name: Statut sur le commit (lancement par Renovate)
-        if: always() && github.event_name == 'workflow_dispatch' && inputs.pull_request != ''
-        env:
-          GH_TOKEN: ${{ github.token }}
-        run: |
-          etat=success
-          [ "${VERDICT_CODE:-1}" = 0 ] || etat=failure
-          gh api "repos/$GITHUB_REPOSITORY/statuses/$GITHUB_SHA" -f state="$etat" -f context="banc-keycloak" \
-            -f description="Banc de non-régression Keycloak" \
-            -f target_url="$GITHUB_SERVER_URL/$GITHUB_REPOSITORY/actions/runs/$GITHUB_RUN_ID"
-
       - name: Verdict (bloquant si régression, contrat rompu ou nouvelle critique)
+        id: verdict
         run: |
           if [ "$VERDICT_CODE" != 0 ]; then
             echo "::error::Montée de version BLOQUÉE (ou banc en échec) : voir le rapport"
@@ -248,6 +238,7 @@ jobs:
           fi
 
       - name: Analyse de l'image candidate (bloquante sur une critique corrigeable)
+        id: analyse
         run: |
           # Bloquante sur main (d'où part la publication) et dès que l'image change (Dockerfile
           # modifié, image fournie à la main). Sur une pull request qui ne touche pas l'image, une
@@ -265,6 +256,24 @@ jobs:
             fi
             echo "::warning::Faille critique corrigeable déjà présente sur main, image inchangée par cette pull request : en attente d'une reconstruction de l'image officielle (Renovate)"
           fi
+
+      # Statut « banc-keycloak » sur le commit de la pull request : c'est lui que la règle de main
+      # exige (et non les noms des jobs). Posé par le run de l'événement pull_request comme par le
+      # run lancé par Renovate, après le verdict ET l'analyse de l'image, pour qu'un run en attente
+      # d'approbation ne bloque pas une fusion déjà validée par un autre run du même commit.
+      - name: Statut « banc-keycloak » sur le commit de la pull request
+        if: always() && (github.event_name == 'pull_request' || (github.event_name == 'workflow_dispatch' && inputs.pull_request != ''))
+        env:
+          GH_TOKEN: ${{ github.token }}
+          COMMIT: ${{ github.event.pull_request.head.sha || github.sha }}
+          VERDICT: ${{ steps.verdict.outcome }}
+          ANALYSE: ${{ steps.analyse.outcome }}
+        run: |
+          etat=failure
+          [ "$VERDICT" = success ] && [ "$ANALYSE" = success ] && etat=success
+          gh api "repos/$GITHUB_REPOSITORY/statuses/$COMMIT" -f state="$etat" -f context="banc-keycloak" \
+            -f description="Banc de non-régression Keycloak (verdict et analyse de l'image)" \
+            -f target_url="$GITHUB_SERVER_URL/$GITHUB_REPOSITORY/actions/runs/$GITHUB_RUN_ID"
 
       - name: Image testée, pour la publication
         if: github.ref == 'refs/heads/main' && inputs.candidate == '' && inputs.reference == ''
@@ -351,16 +360,34 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1 (Node.js 24)
         with:
           persist-credentials: false
+          fetch-depth: 0
+
+      # Une release par image, pas par commit : rien n'est publié si ni le Dockerfile ni le VEX
+      # n'ont changé depuis la dernière release (correctif de workflow, documentation, banc).
+      - name: L'image a-t-elle changé depuis la dernière release ?
+        id: changement
+        run: |
+          derniere="$(git describe --tags --abbrev=0 --match 'v*' 2> /dev/null || true)"
+          if [ -z "$derniere" ] || ! git diff --quiet "$derniere" HEAD -- Dockerfile securite/vex.openvex.json; then
+            echo "publier=oui" >> "$GITHUB_OUTPUT"
+          else
+            echo "publier=non" >> "$GITHUB_OUTPUT"
+            echo "::notice::Image inchangée depuis $derniere (Dockerfile et VEX identiques) : pas de nouvelle release"
+            echo "Image inchangée depuis **$derniere** : pas de nouvelle release." >> "$GITHUB_STEP_SUMMARY"
+          fi
 
       - name: Outils figés (Trivy pour le SBOM, cosign pour la signature)
+        if: steps.changement.outputs.publier == 'oui'
         run: .github/installer-outils.sh "$RUNNER_TEMP/outils" trivy signature
 
       - name: Image testée et rapport
+        if: steps.changement.outputs.publier == 'oui'
         uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333  # v8.0.2 (Node.js 24)
         with:
           path: /tmp/artefacts
 
       - name: Publication sur ghcr.io
+        if: steps.changement.outputs.publier == 'oui'
         id: image
         env:
           GHCR_JETON: ${{ secrets.GITHUB_TOKEN }}
@@ -379,6 +406,7 @@ jobs:
       # Preuves attachées à l'image sur ghcr.io (vérifiables par tout consommateur, voir README) :
       # SBOM CycloneDX, déclarations VEX, signature de l'image par l'identité OIDC du workflow.
       - name: SBOM, VEX et signature de l'image (Sigstore, sans clé)
+        if: steps.changement.outputs.publier == 'oui'
         env:
           EMPREINTE: ${{ steps.image.outputs.empreinte }}
         run: |
@@ -396,6 +424,7 @@ jobs:
 
       # Attestations GitHub (provenance SLSA et SBOM), vérifiables par « gh attestation verify ».
       - name: Attestation de provenance (SLSA)
+        if: steps.changement.outputs.publier == 'oui'
         uses: actions/attest-build-provenance@4d101475d8b20a2381f78447822ac1eab6504dd8  # v4.2.2
         with:
           subject-name: ${{ env.IMAGE }}
@@ -403,6 +432,7 @@ jobs:
           push-to-registry: true
 
       - name: Attestation du SBOM
+        if: steps.changement.outputs.publier == 'oui'
         uses: actions/attest-sbom@c604332985a26aa8cf1bdc465b92731239ec6b9e  # v4.1.0
         with:
           subject-name: ${{ env.IMAGE }}
@@ -411,6 +441,7 @@ jobs:
           push-to-registry: true
 
       - name: Note de version (release GitHub)
+        if: steps.changement.outputs.publier == 'oui'
         env:
           GH_TOKEN: ${{ github.token }}
           VERSION: ${{ needs.banc.outputs.version_keycloak }}
