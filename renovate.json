@@ -8,6 +8,7 @@
   "dependencyDashboardTitle": "Tableau de bord des mises à jour (Renovate)",
   "labels": ["dépendances"],
   "prConcurrentLimit": 3,
+  "rebaseWhen": "behind-base-branch",
   "automerge": false,
   "packageRules": [
     {
