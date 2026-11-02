@@ -100,6 +100,12 @@ Renovate (chaque nuit)
 Les versions mineures et majeures ne sont jamais fusionnées seules : elles changent presque
 toujours des comportements, un humain lit le rapport.
 
+Les branches de Renovate sont **rebasées dès qu'elles sont en retard sur `main`**
+(`rebaseWhen: behind-base-branch`) : le banc d'une pull request tourne toujours avec les règles et
+les contrôles du moment, jamais avec une version périmée du dépôt (constat du 02/11 : une règle de
+fusion corrigée sur `main` ne s'appliquait pas à une pull request plus ancienne tant qu'elle n'était
+pas rebasée).
+
 **Entre deux releases, l'image publiée reste surveillée** (workflow `veille-image`, chaque matin et à
 la demande) : Trivy analyse la dernière image publiée avec le VEX, résultats dans l'onglet Security.
 Faille critique ou haute **corrigeable** → Renovate est relancé aussitôt et, s'il existe une image de
