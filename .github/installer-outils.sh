@@ -1,7 +1,7 @@
 #!/bin/bash
 # Installe les outils figés de .github/outils.env (version et empreinte vérifiées) dans un
 # dossier, puis l'ajoute au PATH des étapes suivantes du job (GITHUB_PATH).
-# Usage : .github/installer-outils.sh <dossier> [analyse] [trivy] [signature]
+# Usage : .github/installer-outils.sh <dossier> [analyse] [trivy] [tofu] [signature]
 set -euo pipefail
 ICI="$(cd "$(dirname "$0")" && pwd)"
 # shellcheck source=.github/outils.env
@@ -36,6 +36,11 @@ for groupe in "$@"; do
     trivy)
       telecharger "$TRIVY_URL" trivy.tar.gz "$TRIVY_SHA256"
       tar -xzf "$B/trivy.tar.gz" -C "$B" trivy
+      ;;
+    tofu)
+      telecharger "$TOFU_URL" tofu.zip "$TOFU_SHA256"
+      unzip -q -o "$B/tofu.zip" tofu -d "$B"
+      chmod +x "$B/tofu"
       ;;
     signature)
       telecharger "$COSIGN_URL" cosign "$COSIGN_SHA256"

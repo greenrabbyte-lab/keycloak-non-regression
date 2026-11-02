@@ -37,6 +37,7 @@ mdp_admin="$(python3 -c 'import secrets; print(secrets.token_urlsafe(24))')"
 nettoyer() {
   docker rm -f kc-banc pg-banc > /dev/null 2>&1 || true
   docker network rm "$reseau" > /dev/null 2>&1 || true
+  [ -n "${TRAVAIL_TOFU:-}" ] && rm -rf "$TRAVAIL_TOFU"
 }
 trap nettoyer EXIT
 docker network create "$reseau" > /dev/null
@@ -106,21 +107,41 @@ demarrer_keycloak() {
   return 1
 }
 
+# Configuration en code : un seul espace de travail OpenTofu pour tout le passage (état local,
+# chiffré avec une phrase jetable). Appliquée sur la référence, puis « plan » après la migration
+# de la candidate : un plan vide prouve que la montée de version n'a rien changé à la
+# configuration promise (sinon : dérive, consignée dans derive.json et dans le rapport).
+TRAVAIL_TOFU=""
+preparer_opentofu() {
+  TRAVAIL_TOFU="$(mktemp -d)"
+  cp -r "$ICI/../opentofu" "$TRAVAIL_TOFU/"
+  export TF_IN_AUTOMATION=1 TF_VAR_keycloak_utilisateur=admin TF_VAR_keycloak_mot_de_passe="$mdp_admin"
+  TF_VAR_state_passphrase="$(python3 -c 'import secrets; print(secrets.token_urlsafe(24))')"
+  export TF_VAR_state_passphrase
+  (cd "$TRAVAIL_TOFU/opentofu/racine" && tofu init -input=false -no-color > /dev/null \
+     && tofu workspace new banc -no-color > /dev/null)
+  printf '{}' > "$SORTIE/derive.json"
+}
 appliquer_opentofu() {
-  local travail
-  travail="$(mktemp -d)"
-  cp -r "$ICI/../opentofu" "$travail/"
-  (
-    cd "$travail/opentofu/racine"
-    export TF_IN_AUTOMATION=1 TF_VAR_keycloak_utilisateur=admin TF_VAR_keycloak_mot_de_passe="$mdp_admin"
-    TF_VAR_state_passphrase="$(python3 -c 'import secrets; print(secrets.token_urlsafe(24))')"
-    export TF_VAR_state_passphrase
-    tofu init -input=false -no-color > /dev/null
-    tofu workspace new banc -no-color > /dev/null
-    tofu apply -auto-approve -input=false -no-color -var-file=banc.tfvars > /dev/null
-    tofu plan -detailed-exitcode -input=false -no-color -var-file=banc.tfvars > /dev/null
-  )
-  rm -rf "$travail"
+  [ -n "$TRAVAIL_TOFU" ] || preparer_opentofu
+  (cd "$TRAVAIL_TOFU/opentofu/racine" && tofu apply -auto-approve -input=false -no-color -var-file=banc.tfvars > /dev/null)
+}
+# plan_vide <reference|candidate> : plan détaillé ; 0 = aucune dérive, 2 = dérive, 1 = erreur.
+plan_vide() {
+  local quoi="$1" code=0
+  (cd "$TRAVAIL_TOFU/opentofu/racine" && tofu plan -detailed-exitcode -input=false -no-color -var-file=banc.tfvars \
+     > "$SORTIE/plan-$quoi.txt" 2>&1) || code=$?
+  python3 - "$SORTIE/derive.json" "$quoi" "$code" "$SORTIE/plan-$quoi.txt" <<'PY'
+import json, sys
+chemin, quoi, code, plan = sys.argv[1], sys.argv[2], int(sys.argv[3]), sys.argv[4]
+d = json.load(open(chemin))
+lignes = [l for l in open(plan, encoding="utf-8", errors="replace").read().splitlines()
+          if l.strip().startswith(("#", "~", "+", "-", "Plan:", "Error", "No changes"))][:40]
+d[quoi] = {"code": code, "etat": {0: "aucune dérive", 2: "dérive"}.get(code, "erreur"), "extrait": lignes}
+json.dump(d, open(chemin, "w"), ensure_ascii=False, indent=2)
+PY
+  echo "OpenTofu ($quoi) : $(python3 -c "import json,sys; print(json.load(open(sys.argv[1]))[sys.argv[2]]['etat'])" "$SORTIE/derive.json" "$quoi")"
+  [ "$code" -ne 1 ] || { echo "tofu plan en erreur : $SORTIE/plan-$quoi.txt" >&2; return 1; }
 }
 
 passer_banc() {
@@ -134,17 +155,19 @@ passer_banc() {
 echo "== Référence : $REF"
 demarrer_postgres
 demarrer_keycloak "$REF" "${DEMARRAGE_REFERENCE:-start}" oui
-[ "$CONFIGURATION" = opentofu ] && appliquer_opentofu
+if [ "$CONFIGURATION" = opentofu ]; then appliquer_opentofu; plan_vide reference; fi
 passer_banc "${ETIQUETTE_REFERENCE:-$REF}" "$SORTIE/reference.json"
 
 echo "== Candidate : $CAND (mode $MODE)"
 if [ "$MODE" = neuf ]; then
   demarrer_postgres
   demarrer_keycloak "$CAND" "${DEMARRAGE_CANDIDATE:-start}" oui
-  [ "$CONFIGURATION" = opentofu ] && appliquer_opentofu
+  if [ "$CONFIGURATION" = opentofu ]; then appliquer_opentofu; plan_vide candidate; fi
 else
   docker rm -f kc-banc > /dev/null
   demarrer_keycloak "$CAND" "${DEMARRAGE_CANDIDATE:-start}" non
+  # Après la migration : la configuration appliquée sur la référence doit être intacte.
+  [ "$CONFIGURATION" = opentofu ] && plan_vide candidate
 fi
 passer_banc "${ETIQUETTE_CANDIDATE:-$CAND}" "$SORTIE/candidate.json"
 
@@ -161,8 +184,10 @@ fi
 contrats=()
 for c in ${CONTRATS:-}; do contrats+=(--contrat "$c"); done
 
+derive_args=()
+[ "$CONFIGURATION" = opentofu ] && derive_args=(--derive "$SORTIE/derive.json")
 code=0
 python3 "$ICI/rapport.py" "$SORTIE/reference.json" "$SORTIE/candidate.json" "${trivy_args[@]}" "${contrats[@]}" \
-  --resume "$SORTIE/resume.json" > "$SORTIE/rapport.md" || code=$?
+  "${derive_args[@]}" --resume "$SORTIE/resume.json" > "$SORTIE/rapport.md" || code=$?
 echo "Rapport : $SORTIE/rapport.md (verdict : $(python3 -c "import json; print(json.load(open('$SORTIE/resume.json'))['verdict'])"))"
 exit "$code"

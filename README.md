@@ -169,7 +169,10 @@ fédération avec Entra ID et la traduction de ses rôles d'application en rôle
 
 Un espace de travail par environnement (`banc`, `uat`, `prod`), même module :
 **le banc applique exactement la configuration promise à l'UAT puis à la production**
-(`CONFIGURATION=opentofu`), et un second `tofu plan` vide prouve l'absence de dérive. Les
+(`CONFIGURATION=opentofu`, le mode du workflow) sur la version en place, puis, après la migration
+vers la candidate, un second `tofu plan` doit être **vide** : la montée de version n'a rien changé à
+la configuration. Une dérive bloque la fusion (verdict BLOQUÉE) et le rapport montre l'extrait du
+plan ; les deux plans sont joints au rapport (`plan-reference.txt`, `plan-candidate.txt`). Les
 personnes ne sont pas gérées dans OpenTofu : elles viennent d'Entra ID (et de l'outil d'IAM en
 amont). État chiffré (`state_passphrase`) ; `prod.tfvars` et `uat.tfvars` restent hors Git.
 
