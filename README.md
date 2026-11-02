@@ -100,6 +100,14 @@ Renovate (chaque nuit)
 Les versions mineures et majeures ne sont jamais fusionnées seules : elles changent presque
 toujours des comportements, un humain lit le rapport.
 
+**Entre deux releases, l'image publiée reste surveillée** (workflow `veille-image`, chaque matin et à
+la demande) : Trivy analyse la dernière image publiée avec le VEX, résultats dans l'onglet Security.
+Faille critique ou haute **corrigeable** → Renovate est relancé aussitôt et, s'il existe une image de
+base plus récente, la pull request suit le circuit ci-dessus sans action humaine. Faille **sans
+correctif** → un ticket GitHub unique « Failles de l'image publiée » est tenu à jour (ouvert, complété,
+fermé quand tout est résolu). À chaque publication, l'inventaire de l'image est envoyé au graphe des
+dépendances du dépôt : les alertes Dependabot couvrent aussi les bibliothèques Java de Keycloak.
+
 ## Image durcie
 
 - Construction optimisée (`kc.sh build`) : base de données, santé, métriques et fonctions
@@ -181,6 +189,8 @@ amont). État chiffré (`state_passphrase`) ; `prod.tfvars` et `uat.tfvars` rest
      exiger les noms des jobs : un run en attente d'approbation bloquerait la fusion automatique),
      pas de poussée forcée ni de suppression ;
    - suppression automatique des branches fusionnées ;
+   - Security : « Dependency graph » et « Dependabot alerts » activés (inventaire envoyé par la
+     publication, veille quotidienne dans l'onglet Security) ;
    - **jamais de runner auto-hébergé** sur un dépôt public.
 4. Remplacer `realm-banc.json` (ou `opentofu/racine/banc.tfvars`) par la configuration type de
    l'organisation, et écrire un contrat par application intégrée.

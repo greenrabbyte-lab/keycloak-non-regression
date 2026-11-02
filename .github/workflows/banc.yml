@@ -431,6 +431,17 @@ jobs:
             echo "- signature et attestations Sigstore (identité : ce workflow)"
           } >> "$GITHUB_STEP_SUMMARY"
 
+      # Inventaire de l'image envoyé au graphe des dépendances du dépôt : alertes Dependabot sur les
+      # bibliothèques Java de Keycloak, consultables dans l'onglet Security, sans e-mail obligatoire.
+      - name: Inventaire vers le graphe des dépendances (Dependabot)
+        if: steps.changement.outputs.publier == 'oui'
+        env:
+          GH_TOKEN: ${{ github.token }}
+          EMPREINTE: ${{ steps.image.outputs.empreinte }}
+        run: |
+          trivy image --quiet --format github --output /tmp/dependances.json "$EMPREINTE"
+          gh api -X POST "repos/$GITHUB_REPOSITORY/dependency-graph/snapshots" --input /tmp/dependances.json             --jq '"Graphe des dépendances : \(.result) (\(.message))"' >> "$GITHUB_STEP_SUMMARY"
+
       # Attestations GitHub (provenance SLSA et SBOM), vérifiables par « gh attestation verify ».
       - name: Attestation de provenance (SLSA)
         if: steps.changement.outputs.publier == 'oui'
