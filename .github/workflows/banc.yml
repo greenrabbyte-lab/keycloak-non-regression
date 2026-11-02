@@ -38,6 +38,12 @@ on:
         description: "Numéro de la pull request (lancement par le workflow renovate)"
         required: false
 
+# Une exécution à la fois par pull request ou par branche ; rien n'est annulé en cours de route
+# (une publication interrompue laisserait une release sans image).
+concurrency:
+  group: banc-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: false
+
 permissions:
   contents: read
 
@@ -72,6 +78,9 @@ jobs:
       - name: Workflows (actionlint)
         run: actionlint
 
+      - name: Workflows (zizmor — permissions, injections, secrets, actions non figées)
+        run: zizmor --offline --persona=pedantic --format plain .github/
+
       - name: Realm de test et contrats (JSON)
         run: |
           python3 -m json.tool realm-banc.json > /dev/null
@@ -98,8 +107,8 @@ jobs:
     timeout-minutes: 60
     permissions:
       contents: read
-      pull-requests: write
-      statuses: write
+      pull-requests: write  # commentaire du rapport sur la pull request
+      statuses: write       # statut « banc-keycloak » sur le commit testé
     outputs:
       fusion_permise: ${{ steps.rapport.outputs.fusion_permise }}
       version_keycloak: ${{ steps.version.outputs.version }}
@@ -299,9 +308,9 @@ jobs:
     runs-on: ubuntu-24.04  # figé (GRL-72, décision GRL-67)
     timeout-minutes: 10
     permissions:
-      contents: write
-      pull-requests: write
-      actions: write
+      contents: write       # fusion de la pull request dans main
+      pull-requests: write  # commentaire de fusion sur la pull request
+      actions: write        # lancement du banc sur main après la fusion
     steps:
       - name: Pull request de Renovate, correctif, sur la version testée ?
         id: controle
@@ -352,10 +361,10 @@ jobs:
     runs-on: ubuntu-24.04  # figé (GRL-72, décision GRL-67)
     timeout-minutes: 20
     permissions:
-      contents: write
-      packages: write
+      contents: write      # note de version (release GitHub)
+      packages: write      # publication de l'image sur ghcr.io
       id-token: write      # signature et attestations sans clé (Sigstore, identité du workflow)
-      attestations: write
+      attestations: write  # attestations de provenance et SBOM attachées à l'image
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1 (Node.js 24)
         with:

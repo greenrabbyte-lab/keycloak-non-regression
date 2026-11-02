@@ -9,17 +9,23 @@ name: verrouiller
 on:
   workflow_dispatch:
 
+# Un seul verrouillage à la fois.
+concurrency:
+  group: verrouiller
+  cancel-in-progress: false
+
 permissions:
   contents: read
 
 jobs:
   verrouiller:
+    name: régénérer le fichier de verrouillage
     runs-on: ubuntu-24.04  # figé (GRL-72, décision GRL-67)
     timeout-minutes: 15
     permissions:
-      contents: write
-      pull-requests: write
-      actions: write
+      contents: write       # branche et commit du fichier de verrouillage
+      pull-requests: write  # ouverture de la pull request
+      actions: write        # lancement du banc sur la branche
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1 (Node.js 24)
         with:

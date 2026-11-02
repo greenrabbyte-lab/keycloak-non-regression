@@ -11,12 +11,13 @@ on:
     - cron: "17 4 * * *"
   workflow_dispatch:
 
+# Un seul passage à la fois ; un passage en cours n'est pas annulé.
+concurrency:
+  group: renovate
+  cancel-in-progress: false
+
 permissions:
-  contents: write
-  pull-requests: write
-  issues: write
-  actions: write
-  statuses: read
+  contents: read
 
 env:
   RENOVATE_VERSION: "44.131.3"
@@ -24,8 +25,15 @@ env:
 
 jobs:
   renovate:
+    name: renovate et banc des branches non testées
     runs-on: ubuntu-24.04  # figé (GRL-72, décision GRL-67)
     timeout-minutes: 30
+    permissions:
+      contents: write       # branches et commits de Renovate
+      pull-requests: write  # pull requests de Renovate (ouverture, mise à jour, étiquettes)
+      issues: write         # tableau de bord des dépendances (issue tenue par Renovate)
+      actions: write        # lancement du banc sur les branches non testées
+      statuses: read        # statut « banc-keycloak » déjà posé ?
     steps:
       - name: Renovate (image vérifiée par son empreinte)
         env:
