@@ -6,7 +6,7 @@
 # Base : image officielle, figée par empreinte (Renovate propose versions et reconstructions ;
 # chaque proposition passe le banc avant fusion). Pour une image imposée par un fournisseur,
 # remplacer les deux FROM par la sienne : le banc dira ce que le durcissement change.
-FROM quay.io/keycloak/keycloak:26.8.1@sha256:a78d6b79572168cb25886b80a8b5b8d4ed4390743e3eecb810538683e209dd6b AS construction
+FROM quay.io/keycloak/keycloak:26.8.1@sha256:3f3c5f8e03c614774b4bd9173b88391fefa4153bfc010d8012d59ad825377332 AS construction
 
 # Désactivées : usurpation d'identité par un administrateur, Kerberos, flux par appareil, CIBA,
 # échange de jetons, API SCIM (à réactiver si l'outil d'IAM provisionne par SCIM), connexion X.
@@ -17,7 +17,7 @@ ENV KC_DB=postgres \
     KC_FEATURES_DISABLED=${FONCTIONS_DESACTIVEES}
 RUN /opt/keycloak/bin/kc.sh build
 
-FROM quay.io/keycloak/keycloak:26.8.1@sha256:a78d6b79572168cb25886b80a8b5b8d4ed4390743e3eecb810538683e209dd6b
+FROM quay.io/keycloak/keycloak:26.8.1@sha256:3f3c5f8e03c614774b4bd9173b88391fefa4153bfc010d8012d59ad825377332
 COPY --from=construction /opt/keycloak/ /opt/keycloak/
 USER 1000
 # Santé : port de gestion 9000 (jamais exposé publiquement) ; vérifiée par Kubernetes.
