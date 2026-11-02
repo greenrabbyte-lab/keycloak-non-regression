@@ -50,7 +50,7 @@ env:
 jobs:
   controles:
     name: contrôles
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04  # figé (GRL-72, décision GRL-67)
     timeout-minutes: 15
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1 (Node.js 24)
@@ -94,7 +94,7 @@ jobs:
     # Pull request venue d'un fork : code non relu, pas de secrets. Le banc ne tourne que sur une
     # branche du dépôt (après revue, la reprendre dans une branche du dépôt).
     if: github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04  # figé (GRL-72, décision GRL-67)
     timeout-minutes: 60
     permissions:
       contents: read
@@ -296,7 +296,7 @@ jobs:
     if: >-
       github.event_name == 'workflow_dispatch' && inputs.pull_request != '' &&
       inputs.candidate == '' && inputs.reference == '' && needs.banc.outputs.fusion_permise == 'oui'
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04  # figé (GRL-72, décision GRL-67)
     timeout-minutes: 10
     permissions:
       contents: write
@@ -349,7 +349,7 @@ jobs:
     if: >-
       github.ref == 'refs/heads/main' && (github.event_name == 'push' || github.event_name == 'workflow_dispatch') &&
       inputs.candidate == '' && inputs.reference == ''
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04  # figé (GRL-72, décision GRL-67)
     timeout-minutes: 20
     permissions:
       contents: write
