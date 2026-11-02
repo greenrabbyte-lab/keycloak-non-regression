@@ -23,12 +23,14 @@ for groupe in "$@"; do
       telecharger "$ACTIONLINT_URL" al.tar.gz "$ACTIONLINT_SHA256"
       telecharger "$RUFF_URL" ruff.tar.gz "$RUFF_SHA256"
       telecharger "$TOFU_URL" tofu.zip "$TOFU_SHA256"
+      telecharger "$ZIZMOR_URL" zizmor.tar.gz "$ZIZMOR_SHA256"
       tar -xJf "$B/sc.tar.xz" -C "$B"
       mv "$B/shellcheck-v$SHELLCHECK_VERSION/shellcheck" "$B/shellcheck"
       tar -xzf "$B/al.tar.gz" -C "$B" actionlint
       tar -xzf "$B/ruff.tar.gz" -C "$B"
       mv "$B/ruff-x86_64-unknown-linux-gnu/ruff" "$B/ruff"
       unzip -q -o "$B/tofu.zip" tofu -d "$B"
+      tar -xzf "$B/zizmor.tar.gz" -C "$B" zizmor
       chmod +x "$B/hadolint" "$B/tofu"
       ;;
     trivy)

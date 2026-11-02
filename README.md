@@ -85,7 +85,8 @@ plateforme et le fournisseur.
 ```
 Renovate (chaque nuit)
   → pull request : correctif ou reconstruction (étiquette fusion-auto), version (étiquette revue)
-  → workflow banc : contrôles, image candidate, banc sur la même base que la version en place,
+  → workflow banc : contrôles (Ruff, ShellCheck, hadolint, actionlint, zizmor, OpenTofu — outils
+    figés par version et empreinte), image candidate, banc sur la même base que la version en place,
     Trivy sur les deux images, rapport en commentaire et statut « banc-keycloak »
   → fusion automatique si TOUT est vrai :
       verdict SANS ÉCART ; failles des deux images analysées ; aucune faille nouvelle ;
