@@ -89,7 +89,7 @@ Renovate (chaque nuit)
     Trivy sur les deux images, rapport en commentaire et statut « banc-keycloak »
   → fusion automatique si TOUT est vrai :
       verdict SANS ÉCART ; failles des deux images analysées ; aucune faille nouvelle ;
-      aucune faille critique ou haute corrigeable dans la candidate ; pull request de Renovate
+      aucune faille critique corrigeable, ni haute corrigeable absente de la version en place, dans la candidate ; pull request de Renovate
       étiquetée fusion-auto ; commit fusionné = commit testé
   → sinon : revue humaine (À EXAMINER), ou rien ne passe (BLOQUÉE)
   → main : banc rejoué contre la version précédente, publication de l'image testée sur ghcr.io
