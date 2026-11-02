@@ -1,0 +1,114 @@
+name: veille-image
+
+# Veille quotidienne de l'image publiée (GRL-45). Le banc n'analyse l'image qu'à chaque passage :
+# une faille publiée entre deux releases restait invisible. Chaque matin (et à la demande) :
+#   1. Trivy (figé) analyse la dernière image publiée (release la plus récente), VEX appliqué ;
+#      résultats dans l'onglet Security (SARIF) ;
+#   2. faille critique ou haute corrigeable → Renovate est relancé aussitôt : s'il existe une image
+#      de base plus récente, la pull request suit le circuit habituel (banc, fusion automatique si le
+#      rapport le permet, publication). Aucune action humaine ;
+#   3. faille sans correctif → un ticket GitHub unique « Failles de l'image publiée » est tenu à
+#      jour (ouvert, complété, fermé quand tout est résolu) ; la préparation du rituel le reprend.
+on:
+  schedule:
+    - cron: "23 5 * * *"
+  workflow_dispatch:
+
+# Un seul passage à la fois ; un passage en cours n'est pas annulé.
+concurrency:
+  group: veille-image
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+
+env:
+  IMAGE: ghcr.io/${{ github.repository_owner }}/keycloak
+  TICKET_TITRE: "Failles de l'image publiée"
+
+jobs:
+  veille:
+    name: analyse de la dernière image publiée
+    runs-on: ubuntu-24.04  # figé (GRL-72, décision GRL-67)
+    timeout-minutes: 20
+    permissions:
+      contents: read
+      security-events: write  # résultats Trivy dans l'onglet Security (SARIF)
+      issues: write           # ticket unique « Failles de l'image publiée »
+      actions: write          # relance du workflow renovate quand un correctif existe
+      packages: read          # lecture de l'image sur ghcr.io
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1 (Node.js 24)
+        with:
+          persist-credentials: false
+
+      - name: Outils figés (Trivy)
+        run: .github/installer-outils.sh "$RUNNER_TEMP/outils" trivy
+
+      - name: Dernière image publiée (release la plus récente)
+        id: image
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          corps="$(gh release view --repo "$GITHUB_REPOSITORY" --json body,tagName --jq '.body')"
+          empreinte="$(printf '%s' "$corps" | sed -n 's/^keycloak_image = "\(ghcr\.io[^"]*@sha256:[0-9a-f]\{64\}\)"$/\1/p' | head -1)"
+          [ -n "$empreinte" ] || { echo "::error::Aucune empreinte d'image dans la dernière release"; exit 1; }
+          echo "empreinte=$empreinte" >> "$GITHUB_OUTPUT"
+          echo "Image analysée : \`$empreinte\`" >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Analyse Trivy (VEX appliqué), JSON et SARIF
+        env:
+          GHCR_JETON: ${{ github.token }}
+          ACTEUR: ${{ github.actor }}
+          EMPREINTE: ${{ steps.image.outputs.empreinte }}
+        run: |
+          printf '%s' "$GHCR_JETON" | docker login ghcr.io -u "$ACTEUR" --password-stdin > /dev/null
+          trivy image --quiet --severity CRITICAL,HIGH --vex securite/vex.openvex.json \
+            --format json --output /tmp/trivy.json "$EMPREINTE"
+          trivy image --quiet --severity CRITICAL,HIGH,MEDIUM --vex securite/vex.openvex.json \
+            --format sarif --output /tmp/trivy.sarif "$EMPREINTE"
+
+      - name: Résultats dans l'onglet Security
+        uses: github/codeql-action/upload-sarif@6f2ac81f5cd81fe351a197ba0b00d91d03cd2aee  # v4.39.0
+        with:
+          sarif_file: /tmp/trivy.sarif
+          category: image-publiee
+
+      - name: Classement des failles
+        id: classement
+        env:
+          EMPREINTE: ${{ steps.image.outputs.empreinte }}
+        run: |
+          python3 banc/veille_image.py /tmp/trivy.json --image "$EMPREINTE" --sortie "$GITHUB_OUTPUT" --ticket /tmp/ticket.md
+          cat /tmp/ticket.md >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Correctif disponible → Renovate relancé
+        if: steps.classement.outputs.corrigeables != '0'
+        env:
+          GH_TOKEN: ${{ github.token }}
+          CORRIGEABLES: ${{ steps.classement.outputs.corrigeables }}
+        run: |
+          gh workflow run renovate.yml --repo "$GITHUB_REPOSITORY" --ref main
+          echo "Renovate relancé : $CORRIGEABLES faille(s) corrigeable(s)." >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Ticket unique « Failles de l'image publiée »
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TOTAL: ${{ steps.classement.outputs.total }}
+        run: |
+          numero="$(gh issue list --repo "$GITHUB_REPOSITORY" --state open --search "in:title \"$TICKET_TITRE\"" \
+                    --json number,title --jq "[.[] | select(.title == \"$TICKET_TITRE\")][0].number // empty")"
+          if [ "$TOTAL" = 0 ]; then
+            if [ -n "$numero" ]; then
+              gh issue comment "$numero" --repo "$GITHUB_REPOSITORY" --body-file /tmp/ticket.md
+              gh issue close "$numero" --repo "$GITHUB_REPOSITORY" --comment "Plus aucune faille critique ou haute dans l'image publiée : ticket fermé automatiquement."
+              echo "Ticket #$numero fermé." >> "$GITHUB_STEP_SUMMARY"
+            fi
+          elif [ -n "$numero" ]; then
+            gh issue edit "$numero" --repo "$GITHUB_REPOSITORY" --body-file /tmp/ticket.md
+            echo "Ticket #$numero mis à jour." >> "$GITHUB_STEP_SUMMARY"
+          else
+            gh label create securite --repo "$GITHUB_REPOSITORY" --color B60205 --description "Failles de l'image publiée" 2> /dev/null || true
+            url="$(gh issue create --repo "$GITHUB_REPOSITORY" --title "$TICKET_TITRE" --label securite --body-file /tmp/ticket.md)"
+            echo "Ticket ouvert : $url" >> "$GITHUB_STEP_SUMMARY"
+          fi

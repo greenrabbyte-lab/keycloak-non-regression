@@ -6,8 +6,9 @@ au besoin, un résumé JSON (verdict, compteurs) pour un portail ou un tableau d
 
 Verdict :
   BLOQUÉE      un test réussi sur la référence échoue sur la candidate (régression), une
-               exigence d'un contrat d'application n'est plus satisfaite, ou une faille
-               critique apparaît ;
+               exigence d'un contrat d'application n'est plus satisfaite, une faille
+               critique apparaît, ou la configuration en code dérive après la migration
+               (CONFIGURATION=opentofu : le plan sur la candidate n'est pas vide) ;
   À EXAMINER   aucune régression, mais des comportements changent : à lire avant de fusionner ;
   SANS ÉCART   mêmes résultats, mêmes comportements.
 
@@ -111,6 +112,7 @@ def main():
     a.add_argument("--trivy-reference")
     a.add_argument("--trivy-candidate")
     a.add_argument("--contrat", action="append", default=[], help="contrat d'application (JSON), répétable")
+    a.add_argument("--derive", help="derive.json du banc (CONFIGURATION=opentofu) : plans OpenTofu")
     a.add_argument("--resume", help="écrit un résumé JSON (verdict, compteurs)")
     a.add_argument("--strict", action="store_true", help="code 1 si des comportements changent")
     args = a.parse_args()
@@ -144,7 +146,11 @@ def main():
     contrats = verifier_contrats(args.contrat, ref, cand)
     ruptures = [c for c in contrats if not c["candidate"]]
 
-    if regressions or nouvelles_critiques or ruptures:
+    # Configuration en code : la candidate, après migration, doit laisser un plan OpenTofu vide.
+    derive = charger(args.derive) if args.derive else {}
+    derive_candidate = derive.get("candidate", {}).get("code") not in (None, 0)
+
+    if regressions or nouvelles_critiques or ruptures or derive_candidate:
         verdict, signe = "BLOQUÉE", "✖"
     elif differences:
         verdict, signe = "À EXAMINER", "▲"
@@ -180,7 +186,9 @@ def main():
            f"{len(corrections)} amélioration(s), "
            f"{len(differences)} comportement(s) modifié(s)"
            + (f", {len(ruptures)} exigence(s) d'application non satisfaite(s)" if contrats else "")
-           + (f", {len(nouvelles_critiques)} faille(s) critique(s) nouvelle(s)" if f_cand is not None else "") + ".")
+           + (f", {len(nouvelles_critiques)} faille(s) critique(s) nouvelle(s)" if f_cand is not None else "")
+           + (", configuration OpenTofu : " + ("dérive après migration" if derive_candidate else "plan vide")
+              if derive else "") + ".")
     ecrire("")
     if raisons_refus:
         suite = "correction obligatoire avant toute fusion" if verdict == "BLOQUÉE" else "revue humaine du rapport"
@@ -226,6 +234,27 @@ def main():
             ecrire(f"| {c['application']} | `{c['observation']}` : `{c['cle']}` | "
                    f"{'✔' if c['reference'] else '✖'} | {'✔' if c['candidate'] else '✖ rompue'} | "
                    f"{c.get('raison', '')} | {c.get('remede', '') if not c['candidate'] else ''} |")
+        ecrire("")
+
+    if derive:
+        ecrire("## Configuration en code (OpenTofu)")
+        ecrire("")
+        ecrire("La configuration promise (`opentofu/racine`, espace de travail `banc`) est appliquée sur la "
+               "référence ; après la migration, un `tofu plan` sur la candidate doit être vide.")
+        ecrire("")
+        ecrire("| Passage | Plan |")
+        ecrire("|---|---|")
+        for quoi in ("reference", "candidate"):
+            if quoi in derive:
+                etat = derive[quoi]["etat"]
+                ecrire(f"| {quoi} | {'✔' if derive[quoi]['code'] == 0 else '✖'} {etat} |")
+        if derive_candidate and derive.get("candidate", {}).get("extrait"):
+            ecrire("")
+            ecrire("Extrait du plan sur la candidate (ce que la montée de version a changé) :")
+            ecrire("")
+            ecrire("```")
+            sortie.extend(derive["candidate"]["extrait"])
+            ecrire("```")
         ecrire("")
 
     ecrire("## Comportements modifiés")
@@ -304,6 +333,7 @@ def main():
                        "failles_nouvelles": failles_nouvelles,
                        "failles_graves_corrigeables": graves_corrigeables,
                        "fusion_automatique": {"permise": not raisons_refus, "raisons": raisons_refus},
+                       "configuration_opentofu": {q: v.get("etat") for q, v in derive.items()} if derive else None,
                        "exigences_rompues": [f"{c['application']} : {c['cle']}" for c in ruptures]},
                       f, ensure_ascii=False, indent=2)
     if verdict == "BLOQUÉE":

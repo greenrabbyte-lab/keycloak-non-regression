@@ -2,8 +2,9 @@ name: banc
 
 # Golden path de Keycloak. À chaque proposition (Renovate ou humaine) :
 #   1. contrôles : code, Dockerfile, workflows et configuration OpenTofu (outils figés) ;
-#   2. banc : image candidate (Dockerfile), banc sur la version en place puis sur la candidate,
-#      même base PostgreSQL (vraie montée de version), Trivy sur les deux images, rapport de
+#   2. banc : image candidate (Dockerfile), configuration OpenTofu appliquée sur la version en
+#      place, banc, migration vers la candidate sur la même base PostgreSQL (vraie montée de
+#      version) avec « tofu plan » vide exigé, banc, Trivy sur les deux images, rapport de
 #      montée de version (résumé, pièce jointe, commentaire de la pull request, statut
 #      « banc-keycloak ») ;
 #   3. fusion automatique d'une pull request de Renovate étiquetée « fusion-auto » (correctif ou
@@ -148,8 +149,8 @@ jobs:
           version="$(grep -m1 -E '^FROM ' Dockerfile | awk '{print $2}' | sed -E 's/@.*//; s/.*://')"
           echo "version=$version" >> "$GITHUB_OUTPUT"
 
-      - name: Trivy (version et empreinte figées)
-        run: .github/installer-outils.sh "$RUNNER_TEMP/outils" trivy
+      - name: Trivy et OpenTofu (version et empreinte figées)
+        run: .github/installer-outils.sh "$RUNNER_TEMP/outils" trivy tofu
 
       - name: Image candidate
         env:
@@ -201,6 +202,9 @@ jobs:
         id: rapport
         env:
           MODE: ${{ inputs.mode || 'migration' }}
+          # Configuration en code : opentofu/racine appliqué sur la référence, plan vide exigé sur la
+          # candidate après migration (GRL-24). « realm » : import de realm-banc.json (ancien mode).
+          CONFIGURATION: opentofu
           DEMARRAGE_REF_ENTREE: ${{ inputs.demarrage_reference }}
           CANDIDATE_ENTREE: ${{ inputs.candidate }}
         run: |
@@ -430,6 +434,17 @@ jobs:
             echo "- VEX : $(jq '.statements | length' securite/vex.openvex.json) déclaration(s)"
             echo "- signature et attestations Sigstore (identité : ce workflow)"
           } >> "$GITHUB_STEP_SUMMARY"
+
+      # Inventaire de l'image envoyé au graphe des dépendances du dépôt : alertes Dependabot sur les
+      # bibliothèques Java de Keycloak, consultables dans l'onglet Security, sans e-mail obligatoire.
+      - name: Inventaire vers le graphe des dépendances (Dependabot)
+        if: steps.changement.outputs.publier == 'oui'
+        env:
+          GH_TOKEN: ${{ github.token }}
+          EMPREINTE: ${{ steps.image.outputs.empreinte }}
+        run: |
+          trivy image --quiet --format github --output /tmp/dependances.json "$EMPREINTE"
+          gh api -X POST "repos/$GITHUB_REPOSITORY/dependency-graph/snapshots" --input /tmp/dependances.json             --jq '"Graphe des dépendances : \(.result) (\(.message))"' >> "$GITHUB_STEP_SUMMARY"
 
       # Attestations GitHub (provenance SLSA et SBOM), vérifiables par « gh attestation verify ».
       - name: Attestation de provenance (SLSA)
