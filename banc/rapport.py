@@ -13,7 +13,9 @@ Verdict :
 
 Fusion automatique : permise seulement si le verdict est SANS ÉCART, que les failles des deux
 images ont été analysées (Trivy), que la candidate n'apporte aucune faille nouvelle et ne
-contient aucune faille critique ou haute corrigeable. Le rapport le dit, avec les raisons d'un
+contient aucune faille critique corrigeable ni haute corrigeable absente de la référence (une haute
+corrigeable déjà présente dans la version en place ne bloque pas une candidate qui l'améliore).
+Le rapport le dit, avec les raisons d'un
 refus ; le workflow vérifie en plus le type de mise à jour (correctif ou reconstruction).
 Code de sortie : 2 si BLOQUÉE, 0 sinon (1 avec --strict si À EXAMINER).
 
@@ -156,12 +158,21 @@ def main():
         raisons_refus.append("failles non analysées")
     else:
         failles_nouvelles = sorted(c for c in f_cand if c not in f_ref)
+        # Bloquent la fusion : une critique corrigeable, où qu'elle vienne, et une haute corrigeable
+        # *absente de la référence*. Une haute corrigeable déjà présente dans la version en place ne
+        # bloque pas une candidate qui ne fait que réduire les failles (constaté le 2026-11-02 : une
+        # reconstruction corrigeant 38 failles, sans aucune nouvelle, attendait une revue pour une
+        # haute héritée de l'image amont) ; elle reste listée dans le rapport.
         graves_corrigeables = sorted(c for c, v in f_cand.items()
-                                     if v["gravite"] in ("CRITICAL", "HIGH") and v["corrigee_en"])
+                                     if v["corrigee_en"] and (v["gravite"] == "CRITICAL"
+                                                             or (v["gravite"] == "HIGH" and c not in f_ref)))
+        heritees = sorted(c for c, v in f_cand.items()
+                          if v["corrigee_en"] and v["gravite"] == "HIGH" and c in f_ref)
         if failles_nouvelles:
             raisons_refus.append(f"{len(failles_nouvelles)} faille(s) nouvelle(s)")
         if graves_corrigeables:
-            raisons_refus.append(f"{len(graves_corrigeables)} faille(s) critique(s) ou haute(s) corrigeable(s)")
+            raisons_refus.append(f"{len(graves_corrigeables)} faille(s) critique(s) ou haute(s) corrigeable(s) "
+                                 "(critique, ou haute absente de la référence)")
 
     ecrire(f"# Montée de version Keycloak : {ref['etiquette']} → {cand['etiquette']}")
     ecrire("")
@@ -176,7 +187,10 @@ def main():
         ecrire(f"**Fusion automatique : non** ({', '.join(raisons_refus)}) : {suite}.")
     else:
         ecrire("**Fusion automatique : ✔ permise** (sans écart, aucune faille nouvelle, aucune faille "
-               "critique ou haute corrigeable).")
+               "critique corrigeable ni haute corrigeable absente de la référence"
+               + (f" ; {len(heritees)} haute(s) corrigeable(s) héritée(s) de la version en place, à suivre"
+                  if heritees else "")
+               + ").")
     ecrire("")
     ecrire(f"Banc passé le {ref['date']} (référence) et le {cand['date']} (candidate).")
     ecrire("")
